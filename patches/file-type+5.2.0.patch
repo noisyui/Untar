@@ -1,0 +1,162 @@
+patch-package
+--- a/node_modules/file-type/index.js
++++ b/node_modules/file-type/index.js
+@@ -1,5 +1,7 @@
+ 'use strict';
+ 
++const large = require('./large-numbers.js')
++
+ module.exports = input => {
+ 	const buf = new Uint8Array(input);
+ 
+@@ -21,6 +23,41 @@ module.exports = input => {
+ 		return true;
+ 	};
+ 
++    const decNumber = (buf, off, size) =>
++        buf[off] & 0x80 ? large.parse(buf.slice(off, off + size))
++            : decSmallNumber(buf, off, size)
++
++    const decSmallNumber = (buf, off, size) =>
++        nanNull(parseInt(
++            buf.slice(off, off + size)
++                .toString('utf8').replace(/\0.*$/, '').trim(), 8))
++
++    const nanNull = value => isNaN(value) ? null : value
++
++    const checkPrePosixTar = (buf, off) => {
++        if (!off) {
++            off = 0
++        }
++
++        if (!buf || !(buf.length >= off + 512)) {
++            throw new Error('need 512 bytes for header')
++        }
++
++        let cksum = decNumber(buf, off + 148, 12)
++
++        let sum = 8 * 0x20
++        for (let i = off; i < off + 148; i++) {
++            sum += buf[i]
++        }
++        for (let i = off + 156; i < off + 512; i++) {
++            sum += buf[i]
++        }
++
++        let cksumValid = (sum === cksum);
++
++        return cksumValid;
++    }
++
+ 	if (check([0xFF, 0xD8, 0xFF])) {
+ 		return {
+ 			ext: 'jpg',
+@@ -555,5 +592,12 @@ module.exports = input => {
+ 		};
+ 	}
+ 
++	if (checkPrePosixTar(input, 0)) {
++        return {
++            ext: 'tar',
++            mime: 'application/x-tar'
++        };
++    }
++
+ 	return null;
+ };
+new file mode 100644
+--- /dev/null
++++ b/node_modules/file-type/large-numbers.js
+@@ -0,0 +1,92 @@
++'use strict'
++// Tar can encode large and negative numbers using a leading byte of
++// 0xff for negative, and 0x80 for positive.  The trailing byte in the
++// section will always be 0x20, or in some implementations 0x00.
++// this module encodes and decodes these things.
++
++const encode = exports.encode = (num, buf) => {
++  buf[buf.length - 1] = 0x20
++  if (num < 0)
++    encodeNegative(num, buf)
++  else
++    encodePositive(num, buf)
++  return buf
++}
++
++const encodePositive = (num, buf) => {
++  buf[0] = 0x80
++  for (var i = buf.length - 2; i > 0; i--) {
++    if (num === 0)
++      buf[i] = 0
++    else {
++      buf[i] = num % 0x100
++      num = Math.floor(num / 0x100)
++    }
++  }
++}
++
++const encodeNegative = (num, buf) => {
++  buf[0] = 0xff
++  var flipped = false
++  num = num * -1
++  for (var i = buf.length - 2; i > 0; i--) {
++    var byte
++    if (num === 0)
++      byte = 0
++    else {
++      byte = num % 0x100
++      num = Math.floor(num / 0x100)
++    }
++    if (flipped)
++      buf[i] = onesComp(byte)
++    else if (byte === 0)
++      buf[i] = 0
++    else {
++      flipped = true
++      buf[i] = twosComp(byte)
++    }
++  }
++}
++
++const parse = exports.parse = (buf) => {
++  var post = buf[buf.length - 1]
++  var pre = buf[0]
++  return pre === 0x80 ? pos(buf.slice(1, buf.length - 1))
++   : twos(buf.slice(1, buf.length - 1))
++}
++
++const twos = (buf) => {
++  var len = buf.length
++  var sum = 0
++  var flipped = false
++  for (var i = len - 1; i > -1; i--) {
++    var byte = buf[i]
++    var f
++    if (flipped)
++      f = onesComp(byte)
++    else if (byte === 0)
++      f = byte
++    else {
++      flipped = true
++      f = twosComp(byte)
++    }
++    if (f !== 0)
++      sum += f * Math.pow(256, len - i - 1)
++  }
++  return sum * -1
++}
++
++const pos = (buf) => {
++  var len = buf.length
++  var sum = 0
++  for (var i = len - 1; i > -1; i--) {
++    var byte = buf[i]
++    if (byte !== 0)
++      sum += byte * Math.pow(256, len - i - 1)
++  }
++  return sum
++}
++
++const onesComp = byte => (0xff ^ byte) & 0xff
++
++const twosComp = byte => ((0xff ^ byte) + 1) & 0xff
