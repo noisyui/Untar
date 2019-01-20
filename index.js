@@ -10,7 +10,8 @@ let untar = async (tarFileName) => {
 
     addMagicIfPrePOSIXTar(buffer);
 
-    fs.writeSync(fd, buffer, 0, 512, 0);
+    // todo need write permission
+    // fs.writeSync(fd, buffer, 0, 512, 0);
 
     let tarBuffer = await decompress(tarFileName, 'output');
     return tarBuffer;
